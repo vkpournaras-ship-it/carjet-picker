@@ -23,20 +23,21 @@
   h1{font-size:17px;margin:0 0 3px;font-weight:700;letter-spacing:.2px}
   .sub{color:var(--muted);font-size:12px;margin:0 0 14px;line-height:1.5}
 
-  /* PDF-style header */
-  .header{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:16px}
+  /* PDF-style header (read-only, confirms the request) */
+  .header{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px}
+  .header.green{background:var(--greenbg);border-color:var(--green)}
   .hd-top{font-size:10.5px;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;
           display:flex;justify-content:space-between;align-items:center}
   .hd-top .stat{color:var(--green);font-weight:700}
   .hd-main{font-size:16px;font-weight:700;margin-top:5px;letter-spacing:.2px}
   .hd-sub{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.45}
+  .hd-lock{font-size:11px;color:var(--green);margin-top:8px;font-weight:600;letter-spacing:.3px;
+           border-top:1px solid rgba(33,196,93,.25);padding-top:7px}
 
   .label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;
-         margin:18px 2px 9px;font-weight:700}
+         margin:16px 2px 9px;font-weight:700}
 
   .row{display:flex;flex-wrap:wrap;gap:7px}
-  .seg{display:flex;gap:8px}
-  .seg button{flex:1}
 
   .chip{padding:9px 13px;border-radius:7px;border:1.5px solid var(--line);background:transparent;
         color:var(--txt);font-size:12.5px;cursor:pointer;font-weight:600;letter-spacing:.2px;
@@ -44,14 +45,11 @@
   .chip.on{color:#03121f;border-color:transparent}
   .chip[disabled]{opacity:1;cursor:default}
 
-  /* days stepper */
-  .stepper{display:flex;align-items:center;gap:10px}
-  .stepper button{width:46px;height:42px;border-radius:8px;border:1.5px solid var(--line);
-        background:var(--panel);color:var(--txt);font-size:22px;font-weight:700;line-height:1;cursor:pointer}
-  .stepper button:disabled{opacity:.35;cursor:default}
-  .stepper .val{min-width:54px;text-align:center}
-  .stepper .num{font-size:22px;font-weight:700;color:var(--txt)}
-  .stepper .cap{display:block;font-size:9.5px;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-top:1px}
+  .confirmRow{display:flex;gap:8px;margin-top:14px}
+  .btn{flex:1;padding:11px;border-radius:8px;border:none;font-size:12.5px;font-weight:700;
+       cursor:pointer;letter-spacing:.4px;text-transform:uppercase}
+  .btn.go,.btn.check{background:var(--green);color:#03210f}
+  .btn.ignore{background:#243039;color:var(--muted)}
 
   .note{padding:11px 13px;color:var(--muted);font-size:12px;border:1px dashed var(--line);
         border-radius:7px;width:100%}
@@ -59,195 +57,249 @@
 </head>
 <body>
   <h1>CarJet price check</h1>
-  <p class="sub">Pick station, sizes and a pickup time, then tap GO.</p>
+  <p class="sub" id="sub">Confirming your request…</p>
 
-  <!-- PDF-style header card -->
+  <!-- PDF-style header card (read-only) -->
   <div class="header" id="hdr">
     <div class="hd-top"><span id="hdLive">live</span><span class="stat" id="hdStat">ZTH · CarJet</span></div>
     <div class="hd-main" id="hdMain">—</div>
-    <div class="hd-sub" id="hdSub">pick a pickup time + at least one size</div>
+    <div class="hd-sub" id="hdSub">—</div>
+    <div class="hd-lock" id="hdLock" style="display:none"></div>
   </div>
 
-  <div class="label">Station</div>
-  <div class="seg" id="station">
-    <button class="chip on" data-v="ZTH02">ZTH · Zakynthos</button>
-    <button class="chip" data-v="EFL02">EFL · Kefalonia</button>
-  </div>
-
-  <div class="label">Car sizes (pick one or more)</div>
-  <div class="row" id="sizes"></div>
-
-  <div class="label">Days (consecutive pickup-days)</div>
-  <div class="stepper" id="days">
-    <button data-d="-1" id="dMinus">−</button>
-    <div class="val"><span class="num" id="dVal">1</span><span class="cap" id="dCap">day</span></div>
-    <button data-d="1" id="dPlus">+</button>
-  </div>
-
-  <div class="label">Pickup time (today)</div>
-  <div class="row" id="times"></div>
-
-  <div class="label">Brokers (optional)</div>
-  <div class="row" id="brokers"></div>
+  <!-- Stage body — populated per request type -->
+  <div id="stage"></div>
 
 <script>
   var tg = window.Telegram.WebApp;
   tg.ready(); tg.expand();
 
-  // ── colour palette per size (CSS var name) ───────────────────────────────
+  // ── request facts from the URL (the bot built this) ──────────────────────────
+  var Q = new URLSearchParams(location.search);
+  var TYPE    = (Q.get("t") || "single").toLowerCase();   // single | today | multi
+  var STATION = (Q.get("st") || "ZTH02").toUpperCase();
+  var CI      = Q.get("ci") || "";
+  var CO      = Q.get("co") || "";
+  var DAYS    = parseInt(Q.get("d") || "1", 10);
+  var PRESIZE = (Q.get("g") || "").toLowerCase();          // optional pre-ticked column
+  var TRANS   = Q.get("tr") || "";
+  var ALLG    = Q.get("all") === "1";
+  var PICKUP  = Q.get("pk") || "";                         // single = 10:00; today chosen in-app
+
+  // ── per-station broker base + extras ─────────────────────────────────────────
+  // The base (always running) is CarJet for ZTH, rentalcars for EFL. Optional extras are the
+  // other three. CarJet is never a single/today button — it is the base.
+  var IS_EFL = STATION.indexOf("EFL") === 0;
+  var BASE   = IS_EFL ? {code:"rc", label:"rentalcars"} : {code:"cj", label:"CarJet"};
+  var EXTRAS = IS_EFL
+    ? [{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
+    : [{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"},{code:"rc",label:"RentalCars"}];
+
   var SIZES = ["Small","Medium","Large","SUV","Estate","Premium","Cabrio","Van"];
   var SIZE_VAR = {Small:"--small",Medium:"--medium",Large:"--large",SUV:"--suv",
                   Estate:"--estate",Premium:"--premium",Cabrio:"--cabrio",Van:"--van"};
-  // Optional brokers (CarJet is the always-on base = the matrix scrape itself, never sent).
-  var BROKERS = [{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"},{code:"rc",label:"RentalCars"}];
-  var STAT = {ZTH02:"ZTH · CarJet", EFL02:"EFL · rentalcars"};
-
   var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  var DAY_MIN = 1, DAY_MAX = 14;
 
-  var sel = {};                 // selected sizes (name -> true)
-  var brk = {};                 // selected optional broker codes (code -> true)
-  var station = "ZTH02", days = 1, pickup = null;
+  // ── selection state ──────────────────────────────────────────────────────────
+  var brk = {};                 // chosen extra broker codes
+  var sel = {};                 // chosen sizes (multi columns)
+  var pickup = PICKUP || null;  // today: chosen in-app
 
   function pad2(n){ return (n<10?"0":"")+n; }
-
-  // ── dates in Europe/Athens (avoids UTC rollover) ─────────────────────────
-  function athensYMD(){
-    var p = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Athens",year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date());
-    var o={}; p.forEach(function(x){o[x.type]=x.value;});
-    return {y:+o.year,m:+o.month,d:+o.day};
-  }
-  function fmt(dt){ return pad2(dt.getUTCDate())+" "+MONTHS[dt.getUTCMonth()]; }
-  function athensHour(){
-    var s = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Athens",hour:"2-digit",hour12:false}).format(new Date());
-    var h = parseInt(s,10); if (h===24) h=0; return h;
+  function fmtIso(iso){
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||"");
+    if(!m) return iso||"—";
+    return parseInt(m[3],10) + " " + MONTHS[parseInt(m[2],10)-1];
   }
   function athensClock(){
     return new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Athens",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date());
   }
+  function athensHour(){
+    var s = new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Athens",hour:"2-digit",hour12:false}).format(new Date());
+    var h = parseInt(s,10); if (h===24) h=0; return h;
+  }
 
-  // ── STATION (single-select) ──────────────────────────────────────────────
-  var stationBox = document.getElementById("station");
-  stationBox.addEventListener("click", function(e){
-    var b = e.target.closest("button"); if(!b) return;
-    [].forEach.call(stationBox.querySelectorAll("button"), function(x){ x.classList.remove("on"); });
-    b.classList.add("on"); station = b.getAttribute("data-v"); update();
-  });
+  // ── read-only header ─────────────────────────────────────────────────────────
+  function renderHeader(){
+    document.getElementById("hdStat").textContent = IS_EFL ? "EFL · rentalcars" : "ZTH · CarJet";
+    document.getElementById("hdLive").textContent = "live · " + athensClock();
+    var loc = STATION.slice(0,3);
+    if (TYPE === "multi"){
+      document.getElementById("hdMain").textContent = loc + "  " + DAYS + "-day matrix";
+      document.getElementById("hdSub").textContent  = "from " + fmtIso(CI) + " · pickup 10:00 · " + DAYS + (DAYS===1?" day":" days");
+    } else if (TYPE === "today"){
+      document.getElementById("hdMain").textContent = loc + "  today  ·  7 days";
+      document.getElementById("hdSub").textContent  = pickup ? ("pickup " + pickup + " · scraping") : "pick a pickup time";
+    } else {
+      document.getElementById("hdMain").textContent = loc + "  " + fmtIso(CI) + " → " + fmtIso(CO) + "  ·  7 days";
+      document.getElementById("hdSub").textContent  = "pickup " + (PICKUP||"10:00") + " · scraping now";
+    }
+  }
+  function lockHeader(text){
+    var h = document.getElementById("hdr"); h.classList.add("green");
+    var l = document.getElementById("hdLock");
+    if (text){ l.style.display = "block"; l.textContent = text; }
+    document.getElementById("hdStat").textContent = "LOCKED";
+  }
 
-  // ── CAR SIZES (multi-select, fill stays) ─────────────────────────────────
-  var sizesBox = document.getElementById("sizes");
-  SIZES.forEach(function(s){
-    var b = document.createElement("button");
-    b.className = "chip"; b.textContent = s;
-    b.addEventListener("click", function(){
-      if (sel[s]) { delete sel[s]; b.classList.remove("on"); b.style.background = ""; }
+  // ── broker chips (extras; the base is always-on, shown disabled) ──────────────
+  function brokerChipsHtml(){
+    var html = '<button class="chip on" disabled style="background:var(--accent)">'
+             + BASE.label + ' · base</button>';
+    EXTRAS.forEach(function(b){
+      html += '<button class="chip" data-brk="'+b.code+'">'+b.label+'</button>';
+    });
+    return html;
+  }
+  function wireBrokerChips(box){
+    box.addEventListener("click", function(e){
+      var b = e.target.closest("button[data-brk]"); if(!b) return;
+      var code = b.getAttribute("data-brk");
+      if (brk[code]){ delete brk[code]; b.classList.remove("on"); b.style.background=""; }
+      else { brk[code] = true; b.classList.add("on"); b.style.background = "var(--accent)"; }
+      update();
+    });
+  }
+  function chosenBrokers(){ return EXTRAS.map(function(b){return b.code;}).filter(function(c){return brk[c];}); }
+
+  // ── size chips (multi only = matrix columns) ─────────────────────────────────
+  function sizeChipsHtml(){
+    return SIZES.map(function(s){
+      var on = PRESIZE && s.toLowerCase() === PRESIZE;
+      if (on) sel[s] = true;
+      return '<button class="chip'+(on?' on':'')+'" data-size="'+s+'"'
+           + (on?(' style="background:var('+SIZE_VAR[s]+')"'):'')+'>'+s+'</button>';
+    }).join("");
+  }
+  function wireSizeChips(box){
+    box.addEventListener("click", function(e){
+      var b = e.target.closest("button[data-size]"); if(!b) return;
+      var s = b.getAttribute("data-size");
+      if (sel[s]){ delete sel[s]; b.classList.remove("on"); b.style.background=""; }
       else { sel[s] = true; b.classList.add("on"); b.style.background = "var("+SIZE_VAR[s]+")"; }
       update();
     });
-    sizesBox.appendChild(b);
-  });
-
-  // ── DAYS (stepper) ───────────────────────────────────────────────────────
-  var dVal = document.getElementById("dVal"), dCap = document.getElementById("dCap");
-  var dMinus = document.getElementById("dMinus"), dPlus = document.getElementById("dPlus");
-  function renderDays(){
-    dVal.textContent = days;
-    dCap.textContent = days === 1 ? "day" : "days";
-    dMinus.disabled = days <= DAY_MIN;
-    dPlus.disabled  = days >= DAY_MAX;
   }
-  document.getElementById("days").addEventListener("click", function(e){
-    var b = e.target.closest("button"); if(!b || b.disabled) return;
-    days = Math.min(DAY_MAX, Math.max(DAY_MIN, days + parseInt(b.getAttribute("data-d"),10)));
-    renderDays(); update();
-  });
+  function chosenSizes(){ return SIZES.filter(function(s){return sel[s];}); }
 
-  // ── PICKUP TIME (single-select, today only) ──────────────────────────────
-  var timesBox = document.getElementById("times");
-  (function buildTimes(){
+  // ── send + close ─────────────────────────────────────────────────────────────
+  function send(extra){
+    var base = { v:2, t:TYPE, st:STATION, ci:CI, co:CO, lang:(Q.get("lang")||"en"),
+                 brokers: chosenBrokers() };
+    if (ALLG) base.all = true;
+    if (PRESIZE) base.g = PRESIZE;
+    if (TRANS) base.tr = TRANS;
+    var payload = Object.assign(base, extra || {});
+    tg.sendData(JSON.stringify(payload));
+    tg.close();
+  }
+
+  // ── flows ──────────────────────────────────────────────────────────────────
+  var stage = document.getElementById("stage");
+  var update = function(){};   // re-bound per flow
+
+  function flowSingle(){
+    document.getElementById("sub").textContent = "Scraping " + BASE.label + " now. Add brokers, then GO (or just close).";
+    stage.innerHTML =
+      '<div class="label">Add brokers (optional)</div>' +
+      '<div class="row" id="brokers">' + brokerChipsHtml() + '</div>';
+    wireBrokerChips(document.getElementById("brokers"));
+    update = function(){
+      var n = chosenBrokers().length;
+      if (n){ tg.MainButton.setText("GO · +" + n + (n===1?" broker":" brokers")); tg.MainButton.enable(); }
+      else  { tg.MainButton.setText("DONE · CarJet only"); tg.MainButton.enable(); }
+    };
+    tg.MainButton.onClick(function(){ send({ pk: PICKUP || "10:00" }); });
+    tg.MainButton.show(); update();
+  }
+
+  function flowToday(){
+    document.getElementById("sub").textContent = "Today needs a pickup time — pick one, add brokers, then GO.";
     var nextHour = athensHour() + 1;
-    if (nextHour > 23) {
-      var note = document.createElement("div");
-      note.className = "note"; note.textContent = "No pickup times left today — try again tomorrow.";
-      timesBox.appendChild(note); return;
+    var times = "";
+    if (nextHour > 23){
+      times = '<div class="note">No pickup times left today — try again tomorrow.</div>';
+    } else {
+      for (var h = nextHour; h <= 23; h++){ times += '<button class="chip" data-time="'+pad2(h)+':00">'+pad2(h)+':00</button>'; }
     }
-    for (var h = nextHour; h <= 23; h++){
-      var b = document.createElement("button");
-      b.className = "chip"; b.setAttribute("data-v", pad2(h)+":00"); b.textContent = pad2(h)+":00";
-      timesBox.appendChild(b);
-    }
+    stage.innerHTML =
+      '<div class="label">Pickup time (today)</div>' +
+      '<div class="row" id="times">' + times + '</div>' +
+      '<div id="afterTime"></div>';
+
+    var timesBox = document.getElementById("times");
     timesBox.addEventListener("click", function(e){
-      var t = e.target.closest("button"); if(!t) return;
+      var t = e.target.closest("button[data-time]"); if(!t) return;
       [].forEach.call(timesBox.querySelectorAll("button"), function(x){ x.classList.remove("on"); x.style.background=""; });
       t.classList.add("on"); t.style.background = "var(--accent)";
-      pickup = t.getAttribute("data-v"); update();
+      pickup = t.getAttribute("data-time");
+      renderHeader();
+      // reveal brokers once a time is picked
+      document.getElementById("afterTime").innerHTML =
+        '<div class="label">Add brokers (optional)</div>' +
+        '<div class="row" id="brokers">' + brokerChipsHtml() + '</div>';
+      wireBrokerChips(document.getElementById("brokers"));
+      update();
     });
-  })();
 
-  // ── BROKERS (CarJet base always-on + optional multi-select) ──────────────
-  var brokersBox = document.getElementById("brokers");
-  (function buildBrokers(){
-    var base = document.createElement("button");
-    base.className = "chip on"; base.textContent = "CarJet"; base.disabled = true;
-    base.style.background = "var(--accent)"; base.title = "base — always included";
-    brokersBox.appendChild(base);
-    BROKERS.forEach(function(b){
-      var btn = document.createElement("button");
-      btn.className = "chip"; btn.textContent = b.label;
-      btn.addEventListener("click", function(){
-        if (brk[b.code]) { delete brk[b.code]; btn.classList.remove("on"); btn.style.background=""; }
-        else { brk[b.code] = true; btn.classList.add("on"); btn.style.background = "var(--accent)"; }
-        update();
-      });
-      brokersBox.appendChild(btn);
-    });
-  })();
-
-  // ── header + GO state ────────────────────────────────────────────────────
-  function update(){
-    document.getElementById("hdStat").textContent = STAT[station] || STAT.ZTH02;
-    document.getElementById("hdLive").textContent = "live · " + athensClock();
-
-    // window: check-in = today (Athens), check-out = +7d (all rentals are 7 days)
-    var t = athensYMD();
-    var ci = new Date(Date.UTC(t.y, t.m-1, t.d));
-    var co = new Date(Date.UTC(t.y, t.m-1, t.d + 7));
-    document.getElementById("hdMain").textContent = station.slice(0,3) + "  " + fmt(ci) + " → " + fmt(co) + "  ·  7 days";
-
-    var sizes = Object.keys(sel);
-    var n = sizes.length;
-    var brokers = BROKERS.filter(function(b){ return brk[b.code]; }).map(function(b){ return b.label; });
-
-    var sub;
-    if (!pickup)      sub = "pick a pickup time";
-    else if (!n)      sub = "pickup " + pickup + " · pick at least one size";
-    else {
-      sub = "pickup " + pickup + " · " + days + (days===1?" day":" days") + " · " + n + (n===1?" size":" sizes");
-      if (brokers.length) sub += " · + " + brokers.join(", ");
-    }
-    document.getElementById("hdSub").textContent = sub;
-
-    if (!pickup)      { tg.MainButton.setText("PICK A PICKUP TIME"); tg.MainButton.disable(); }
-    else if (!n)      { tg.MainButton.setText("PICK AT LEAST ONE SIZE"); tg.MainButton.disable(); }
-    else {
-      tg.MainButton.setText("GO · " + n + (n===1?" size":" sizes") + " · " + days + "d · " + pickup);
-      tg.MainButton.enable();
-    }
+    update = function(){
+      if (!pickup){ tg.MainButton.setText("PICK A PICKUP TIME"); tg.MainButton.disable(); return; }
+      var n = chosenBrokers().length;
+      tg.MainButton.setText("GO · " + pickup + (n?(" · +"+n):"")); tg.MainButton.enable();
+    };
+    tg.MainButton.onClick(function(){ if(!pickup) return; send({ pk: pickup }); });
+    tg.MainButton.show(); update();
   }
 
-  tg.MainButton.setParams({ color:"#21c45d", text_color:"#03210f" });
-  tg.MainButton.show();
-  tg.MainButton.onClick(function(){
-    var sizes = Object.keys(sel);
-    if (!sizes.length || !pickup) return;
-    var brokers = BROKERS.filter(function(b){ return brk[b.code]; }).map(function(b){ return b.code; });
-    tg.sendData(JSON.stringify({ v:1, station:station, sizes:sizes, days:days, pickup:pickup, brokers:brokers }));
-    tg.close();
-  });
+  function flowMulti(){
+    document.getElementById("sub").textContent = "Multi-day grid. Confirm dates → add brokers → pick sizes → GO.";
+    // step 1 — confirm dates
+    stage.innerHTML =
+      '<div class="label">Confirm these dates</div>' +
+      '<div class="confirmRow">' +
+        '<button class="btn check" id="mConfirm">Confirm</button>' +
+        '<button class="btn ignore" id="mSkip">Skip</button>' +
+      '</div>';
+    tg.MainButton.hide();
+    document.getElementById("mSkip").addEventListener("click", function(){ tg.close(); });
+    document.getElementById("mConfirm").addEventListener("click", multiStepBrokers);
+  }
+  function multiStepBrokers(){
+    lockHeader("dates locked");
+    stage.innerHTML =
+      '<div class="label">Add brokers (optional)</div>' +
+      '<div class="row" id="brokers">' + brokerChipsHtml() + '</div>' +
+      '<div class="confirmRow"><button class="btn check" id="mCheck">Check → pick sizes</button></div>';
+    wireBrokerChips(document.getElementById("brokers"));
+    document.getElementById("mCheck").addEventListener("click", multiStepSizes);
+  }
+  function multiStepSizes(){
+    var bro = chosenBrokers();
+    lockHeader("dates locked" + (bro.length ? "  |  brokers: " + bro.join(" · ") : ""));
+    stage.innerHTML =
+      '<div class="label">Select car sizes (matrix columns)</div>' +
+      '<div class="row" id="sizes">' + sizeChipsHtml() + '</div>';
+    wireSizeChips(document.getElementById("sizes"));
+    update = function(){
+      var n = chosenSizes().length;
+      if (n){ tg.MainButton.setText("GO · " + n + (n===1?" column":" columns")); tg.MainButton.enable(); }
+      else  { tg.MainButton.setText("PICK AT LEAST ONE SIZE"); tg.MainButton.disable(); }
+    };
+    tg.MainButton.onClick(function(){
+      var sizes = chosenSizes(); if (!sizes.length) return;
+      send({ d: DAYS, sizes: sizes.map(function(s){return s.toLowerCase();}), pk: "10:00" });
+    });
+    tg.MainButton.setParams({ color:"#21c45d", text_color:"#03210f" });
+    tg.MainButton.show(); update();
+  }
 
-  renderDays();
-  update();
-  // keep the header clock fresh while the panel is open
+  // ── boot ───────────────────────────────────────────────────────────────────
+  tg.MainButton.setParams({ color:"#21c45d", text_color:"#03210f" });
+  renderHeader();
+  if (TYPE === "multi") flowMulti();
+  else if (TYPE === "today") flowToday();
+  else flowSingle();
+
   setInterval(function(){ document.getElementById("hdLive").textContent = "live · " + athensClock(); }, 30000);
 </script>
 </body>
