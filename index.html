@@ -53,6 +53,36 @@
 
   .note{padding:11px 13px;color:var(--muted);font-size:12px;border:1px dashed var(--line);
         border-radius:7px;width:100%}
+
+  /* ── MATRIX BUILDER ── */
+  .seg{display:flex;gap:7px}
+  .seg .chip{flex:1;text-align:center}
+  .cal{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 10px 12px}
+  .cal-hd{display:flex;align-items:center;justify-content:space-between;margin:2px 4px 9px}
+  .cal-hd .mlabel{font-size:13.5px;font-weight:700}
+  .cal-nav{width:30px;height:30px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);
+           color:var(--txt);font-size:15px;cursor:pointer}
+  .cal-nav[disabled]{opacity:.3;cursor:default}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+  .cal-dow{text-align:center;color:var(--muted);font-size:9.5px;font-weight:700;padding:2px 0;text-transform:uppercase}
+  .cal-day{aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;border-radius:7px;
+           font-size:12.5px;cursor:pointer;color:var(--txt);background:transparent;border:1px solid transparent}
+  .cal-day.blank{cursor:default}
+  .cal-day.off{color:#3a4754;cursor:default}
+  .cal-day.inrange{background:rgba(46,166,255,.16)}
+  .cal-day.end1,.cal-day.end2{background:var(--accent);color:#03121f;font-weight:800}
+  .selrow{display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px;margin:9px 2px 0}
+  .selrow b{color:var(--txt)}
+  .tworow{display:flex;gap:10px}
+  .tcell{flex:1}
+  .tcell label{display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:0 2px 5px;font-weight:700}
+  select{width:100%;padding:9px 10px;border-radius:7px;border:1.5px solid var(--line);background:var(--panel2);
+         color:var(--txt);font-size:13px;-webkit-appearance:none;font-weight:600}
+  .count{margin-top:14px;padding:11px 13px;border-radius:8px;border:1px solid var(--line);
+         background:var(--panel);font-size:12.5px;line-height:1.5}
+  .count.ok{border-color:var(--green)} .count.bad{border-color:var(--premium)}
+  .count b{color:var(--txt)} .count .big{font-size:15px;font-weight:800}
+  .count.ok .big{color:var(--green)} .count.bad .big{color:var(--premium)}
 </style>
 </head>
 <body>
@@ -124,7 +154,10 @@
     document.getElementById("hdStat").textContent = IS_EFL ? "EFL · rentalcars" : "ZTH · CarJet";
     document.getElementById("hdLive").textContent = "live · " + athensClock();
     var loc = STATION.slice(0,3);
-    if (TYPE === "multi"){
+    if (TYPE === "matrix"){
+      document.getElementById("hdMain").textContent = loc + "  matrix builder";
+      document.getElementById("hdSub").textContent  = "compose the full sweep below, then GO";
+    } else if (TYPE === "multi"){
       document.getElementById("hdMain").textContent = loc + "  " + DAYS + "-day matrix";
       document.getElementById("hdSub").textContent  = "from " + fmtIso(CI) + " · pickup 10:00 · " + DAYS + (DAYS===1?" day":" days");
     } else if (TYPE === "today"){
@@ -293,10 +326,225 @@
     tg.MainButton.show(); update();
   }
 
+  // ── MATRIX BUILDER ─────────────────────────────────────────────────────────
+  // The app composes the WHOLE request: station · pickup-day RANGE · pickup/drop-off times ·
+  // rental LENGTHS (multi) · brokers (multi) · car groups (multi). Live N = P×r×B counter; GO
+  // confirms the count and blocks > 100. Sends {v:3,t:'matrix',...} back to the bot (web_app_data
+  // → planMatrix → matrix_scrape.py serial sweep). PDF render is the placeholder (being redesigned).
+  var MX = {
+    station: (STATION.indexOf("EFL") === 0) ? "EFL02" : "ZTH02",
+    start: null, end: null,                      // pickup-day range (ISO)
+    pk: "10:00", dk: "10:00",
+    lengths: {},                                 // {N:true}
+    brk: {},                                     // chosen EXTRA broker codes
+    grp: {},                                     // chosen sizes (columns)
+    view: null,                                  // {y,m} month shown
+  };
+  var CAP = 100;
+  var DOW = ["Mo","Tu","We","Th","Fr","Sa","Su"];
+
+  function mxBase(){ return MX.station.indexOf("EFL") === 0
+      ? {code:"rc",label:"rentalcars"} : {code:"cj",label:"CarJet"}; }
+  function mxExtras(){ return MX.station.indexOf("EFL") === 0
+      ? [{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
+      : [{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"},{code:"rc",label:"RentalCars"}]; }
+
+  function athTodayIso(){
+    return new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Athens",
+      year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  }
+  function isoOf(y,m,d){ return y+"-"+pad2(m)+"-"+pad2(d); }
+  function dim(y,m){ return new Date(y,m,0).getDate(); }            // m 1-based → days in month
+  function dowMon(y,m,d){ return (new Date(y,m-1,d).getDay()+6)%7; } // 0=Mon
+  function daysBetween(a,b){
+    return Math.round((new Date(b+"T12:00:00Z")-new Date(a+"T12:00:00Z"))/86400000)+1;
+  }
+  function pickupDays(){
+    if (!MX.start) return 0;
+    return Math.max(0, daysBetween(MX.start, MX.end || MX.start));
+  }
+  function nLengths(){ return Object.keys(MX.lengths).length; }
+  function nBrokers(){ return 1 + Object.keys(MX.brk).length; }     // base + extras
+  function totalScrapes(){ return pickupDays()*nLengths()*nBrokers(); }
+  function baseWindows(){ return pickupDays()*nLengths(); }
+  function etaMin(){ return Math.max(1, Math.round((baseWindows()*10 + baseWindows()*(nBrokers()-1)*12)/60)); }
+
+  function flowMatrix(){
+    document.getElementById("sub").textContent =
+      "Pick a station, a pickup-day range, times, rental lengths, brokers and car groups.";
+    var t = athTodayIso(); MX.view = { y:+t.slice(0,4), m:+t.slice(5,7) };
+
+    var times = "";
+    for (var h=0; h<24; h++){ var v=pad2(h)+":00"; times += '<option value="'+v+'">'+v+'</option>'; }
+    var lenChips = "";
+    for (var L=1; L<=15; L++){ lenChips += '<button class="chip" data-len="'+L+'">'+L+'</button>'; }
+
+    stage.innerHTML =
+      '<div class="label">Station</div>' +
+      '<div class="seg" id="mxSt">' +
+        '<button class="chip" data-st="ZTH02">ZTH</button>' +
+        '<button class="chip" data-st="EFL02">EFL</button></div>' +
+      '<div class="label">Pickup-day range</div>' +
+      '<div class="cal" id="mxCal"></div>' +
+      '<div class="selrow"><span>Start: <b id="mxStart">—</b></span><span>End: <b id="mxEnd">—</b></span></div>' +
+      '<div class="label">Pickup &amp; drop-off time</div>' +
+      '<div class="tworow">' +
+        '<div class="tcell"><label>Pickup</label><select id="mxPk">'+times+'</select></div>' +
+        '<div class="tcell"><label>Drop-off</label><select id="mxDk">'+times+'</select></div></div>' +
+      '<div class="label">Rental length (days) — pick one or more</div>' +
+      '<div class="row" id="mxLen">'+lenChips+'</div>' +
+      '<div class="label">Brokers</div>' +
+      '<div class="row" id="mxBrk"></div>' +
+      '<div class="label">Car groups (matrix columns)</div>' +
+      '<div class="row" id="mxGrp"></div>' +
+      '<div class="count" id="mxCount"></div>';
+
+    document.getElementById("mxSt").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-st]"); if(!b) return;
+      MX.station = b.getAttribute("data-st");
+      STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0;
+      paintStation(); renderBrokers(); renderHeader(); mxUpdate();
+    });
+    document.getElementById("mxPk").value = MX.pk;
+    document.getElementById("mxDk").value = MX.dk;
+    document.getElementById("mxPk").addEventListener("change", function(e){ MX.pk=e.target.value; mxUpdate(); });
+    document.getElementById("mxDk").addEventListener("change", function(e){ MX.dk=e.target.value; mxUpdate(); });
+    document.getElementById("mxLen").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-len]"); if(!b) return;
+      var L = b.getAttribute("data-len");
+      if (MX.lengths[L]){ delete MX.lengths[L]; b.classList.remove("on"); b.style.background=""; }
+      else { MX.lengths[L]=true; b.classList.add("on"); b.style.background="var(--accent)"; }
+      mxUpdate();
+    });
+    document.getElementById("mxGrp").innerHTML = SIZES.map(function(s){
+      return '<button class="chip" data-grp="'+s+'">'+s+'</button>'; }).join("");
+    document.getElementById("mxGrp").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-grp]"); if(!b) return;
+      var s = b.getAttribute("data-grp");
+      if (MX.grp[s]){ delete MX.grp[s]; b.classList.remove("on"); b.style.background=""; }
+      else { MX.grp[s]=true; b.classList.add("on"); b.style.background="var("+SIZE_VAR[s]+")"; }
+      mxUpdate();
+    });
+
+    paintStation(); renderBrokers(); renderCal();
+    tg.MainButton.onClick(mxGo); tg.MainButton.show(); mxUpdate();
+  }
+
+  function paintStation(){
+    [].forEach.call(document.querySelectorAll("#mxSt button"), function(b){
+      var on = b.getAttribute("data-st")===MX.station;
+      b.classList.toggle("on", on);
+      b.style.background = on ? "var(--accent)" : "";
+    });
+  }
+  function renderBrokers(){
+    var base = mxBase();
+    var html = '<button class="chip on" disabled style="background:var(--accent)">'+base.label+' · base</button>';
+    var valid = {}; mxExtras().forEach(function(b){ valid[b.code]=true; });
+    Object.keys(MX.brk).forEach(function(c){ if(!valid[c]) delete MX.brk[c]; });
+    mxExtras().forEach(function(b){
+      var on = MX.brk[b.code];
+      html += '<button class="chip'+(on?' on':'')+'" data-brk="'+b.code+'"'+
+              (on?' style="background:var(--accent)"':'')+'>'+b.label+'</button>';
+    });
+    var box = document.getElementById("mxBrk"); box.innerHTML = html;
+    box.onclick = function(e){
+      var b = e.target.closest("button[data-brk]"); if(!b) return;
+      var c = b.getAttribute("data-brk");
+      if (MX.brk[c]){ delete MX.brk[c]; b.classList.remove("on"); b.style.background=""; }
+      else { MX.brk[c]=true; b.classList.add("on"); b.style.background="var(--accent)"; }
+      mxUpdate();
+    };
+  }
+  function renderCal(){
+    var y=MX.view.y, m=MX.view.m, today=athTodayIso();
+    var head =
+      '<div class="cal-hd">'+
+        '<button class="cal-nav" id="mxPrev">‹</button>'+
+        '<span class="mlabel">'+MONTHS[m-1]+' '+y+'</span>'+
+        '<button class="cal-nav" id="mxNext">›</button></div>';
+    var grid = '<div class="cal-grid">';
+    DOW.forEach(function(d){ grid += '<div class="cal-dow">'+d+'</div>'; });
+    var lead = dowMon(y,m,1);
+    for (var i=0;i<lead;i++) grid += '<div class="cal-day blank"></div>';
+    var n = dim(y,m);
+    for (var d=1; d<=n; d++){
+      var iso = isoOf(y,m,d), cls="cal-day", off = iso < today;
+      if (off) cls += " off";
+      else {
+        if (MX.start && MX.end && iso>MX.start && iso<MX.end) cls += " inrange";
+        if (iso===MX.start) cls += " end1";
+        if (iso===MX.end)   cls += " end2";
+      }
+      grid += '<div class="'+cls+'"'+(off?'':' data-day="'+iso+'"')+'>'+d+'</div>';
+    }
+    grid += '</div>';
+    var cal = document.getElementById("mxCal"); cal.innerHTML = head+grid;
+    var tm = { y:+today.slice(0,4), m:+today.slice(5,7) };
+    var atFloor = (y===tm.y && m<=tm.m);
+    var prev = document.getElementById("mxPrev"); if (atFloor) prev.setAttribute("disabled","");
+    prev.onclick = function(){ if(atFloor) return; MX.view.m--; if(MX.view.m<1){MX.view.m=12;MX.view.y--;} renderCal(); };
+    document.getElementById("mxNext").onclick = function(){ MX.view.m++; if(MX.view.m>12){MX.view.m=1;MX.view.y++;} renderCal(); };
+    cal.querySelector(".cal-grid").addEventListener("click", function(e){
+      var c = e.target.closest("[data-day]"); if(!c) return;
+      var iso = c.getAttribute("data-day");
+      if (!MX.start || (MX.start && MX.end)){ MX.start=iso; MX.end=null; }
+      else if (iso < MX.start){ MX.start=iso; }
+      else { MX.end=iso; }
+      document.getElementById("mxStart").textContent = MX.start ? fmtIso(MX.start) : "—";
+      document.getElementById("mxEnd").textContent   = MX.end ? fmtIso(MX.end) : (MX.start?fmtIso(MX.start):"—");
+      renderCal(); mxUpdate();
+    });
+  }
+
+  function mxUpdate(){
+    var P=pickupDays(), r=nLengths(), B=nBrokers(), N=totalScrapes();
+    var box = document.getElementById("mxCount");
+    var missing = [];
+    if (P<1) missing.push("a pickup-day range");
+    if (r<1) missing.push("a rental length");
+    if (missing.length){
+      box.className="count"; box.textContent="Pick "+missing.join(" and ")+" to see the scrape count.";
+      tg.MainButton.setText("PICK RANGE + LENGTH"); tg.MainButton.disable(); return;
+    }
+    box.innerHTML =
+      '<b>'+P+'</b> pickup day'+(P===1?'':'s')+' × <b>'+r+'</b> length'+(r===1?'':'s')+
+      ' × <b>'+B+'</b> broker'+(B===1?'':'s')+' = <span class="big">'+N+'</span> scrapes'+
+      ' <span style="color:var(--muted)">('+baseWindows()+' base · ~'+etaMin()+'min)</span>';
+    if (N>CAP){
+      box.className="count bad";
+      box.innerHTML += '<br><b style="color:var(--premium)">Over '+CAP+' — trim the range, lengths, or brokers.</b>';
+      tg.MainButton.setText("TOO BIG · "+N+"/"+CAP);
+      tg.MainButton.setParams({ color:"#ef5350", text_color:"#ffffff" }); tg.MainButton.disable();
+    } else {
+      box.className="count ok";
+      tg.MainButton.setParams({ color:"#21c45d", text_color:"#03210f" });
+      tg.MainButton.setText("GO · "+N+" scrapes (~"+etaMin()+"min)"); tg.MainButton.enable();
+    }
+  }
+
+  function mxGo(){
+    var N=totalScrapes(); if (pickupDays()<1 || nLengths()<1 || N>CAP) return;
+    var msg = "This = "+N+" scrapes (~"+etaMin()+"min), serial. Run it?";
+    var doSend = function(){
+      tg.sendData(JSON.stringify({
+        v:3, t:"matrix", st:MX.station, lang:(Q.get("lang")||"en"),
+        start:MX.start, end:(MX.end||MX.start), pk:MX.pk, dk:MX.dk,
+        lengths:Object.keys(MX.lengths).map(Number).sort(function(a,b){return a-b;}),
+        groups:SIZES.filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
+        brokers:mxExtras().map(function(b){return b.code;}).filter(function(c){return MX.brk[c];})
+      }));
+      tg.close();
+    };
+    if (tg.showConfirm){ tg.showConfirm(msg, function(ok){ if(ok) doSend(); }); }
+    else if (window.confirm(msg)){ doSend(); }
+  }
+
   // ── boot ───────────────────────────────────────────────────────────────────
   tg.MainButton.setParams({ color:"#21c45d", text_color:"#03210f" });
   renderHeader();
-  if (TYPE === "multi") flowMulti();
+  if (TYPE === "matrix") flowMatrix();
+  else if (TYPE === "multi") flowMulti();
   else if (TYPE === "today") flowToday();
   else flowSingle();
 
