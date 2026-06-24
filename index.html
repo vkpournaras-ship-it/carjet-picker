@@ -55,6 +55,15 @@
       font-size: 18px; font-weight: 800; background: var(--btn); color: var(--btn-fg); cursor: pointer; }
     .go:disabled { opacity: .4; cursor: not-allowed; }
     .note { text-align: center; color: var(--hint); font-size: 12px; margin-top: 14px; }
+
+    /* Pickup time buttons (single-select, wraps to multiple rows) */
+    .times { display: flex; flex-wrap: wrap; gap: 8px; }
+    .times button { border: 2px solid transparent; background: var(--card); color: var(--fg);
+      opacity: .82; border-radius: 10px; padding: 10px 13px; font-size: 15px; font-weight: 600;
+      cursor: pointer; }
+    .times button.on { opacity: 1; background: var(--btn); color: var(--btn-fg);
+      border-color: rgba(255,255,255,.85); }
+    .times .empty { color: var(--hint); font-size: 13px; padding: 8px 2px; }
   </style>
 </head>
 <body>
@@ -77,6 +86,9 @@
       <div class="val"><span id="days">7</span> <small>days</small></div>
       <button id="plus" aria-label="more days">+</button>
     </div>
+
+    <div class="label">Pickup time (today)</div>
+    <div class="times" id="times"></div>
 
     <button class="go" id="go" disabled>GO</button>
     <p class="note" id="note">Select at least one car size.</p>
@@ -102,6 +114,7 @@
     var selected = {};      // { Small: true, ... }
     var station = "ZTH";
     var days = 7;
+    var pickup = null;      // "HH:00" — required (today query; chosen below)
 
     var chipsEl = document.getElementById("chips");
     GROUPS.forEach(function (g) {
@@ -137,20 +150,55 @@
       days = Math.min(28, days + 1); daysEl.textContent = days;
     });
 
+    // Pickup time (today) — hourly slots from the next full Athens hour through 23:00,
+    // single-select. Every query is for today, so a future pickup is required (the bot
+    // rejects a today payload without one, and a past 10:00 would just bounce war=11).
+    // pad2 keeps HH:00 zero-padded so the payload time matches the bot's /^\d{1,2}:\d{2}$/.
+    function pad2(n) { return (n < 10 ? "0" : "") + n; }
+    function athensHour() {
+      var s = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Athens", hour: "2-digit", hour12: false }).format(new Date());
+      var h = parseInt(s, 10); if (h === 24) h = 0; return h;
+    }
+    var timesEl = document.getElementById("times");
+    var nextHour = athensHour() + 1;
+    if (nextHour <= 23) {
+      for (var hh = nextHour; hh <= 23; hh++) {
+        (function (label) {
+          var b = document.createElement("button");
+          b.textContent = label;
+          b.addEventListener("click", function () {
+            timesEl.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+            b.classList.add("on");
+            pickup = label;
+            refresh();
+          });
+          timesEl.appendChild(b);
+        })(pad2(hh) + ":00");
+      }
+    } else {
+      // After 23:00 Athens — no same-day slot remains. Note it; GO stays disabled.
+      var em = document.createElement("div");
+      em.className = "empty";
+      em.textContent = "No pickup times left today — try tomorrow.";
+      timesEl.appendChild(em);
+    }
+
     // GO
     var goEl = document.getElementById("go");
     var noteEl = document.getElementById("note");
     function refresh() {
       var keys = Object.keys(selected);
-      goEl.disabled = keys.length === 0;
-      noteEl.textContent = keys.length === 0
-        ? "Select at least one car size."
-        : keys.length + " size" + (keys.length > 1 ? "s" : "") + " · " + station + " · " + days + " days";
+      goEl.disabled = keys.length === 0 || !pickup;
+      noteEl.textContent = !pickup
+        ? "Pick a pickup time."
+        : keys.length === 0
+          ? "Select at least one car size."
+          : keys.length + " size" + (keys.length > 1 ? "s" : "") + " · " + station + " · " + days + " days · " + pickup;
     }
     goEl.addEventListener("click", function () {
       var groups = Object.keys(selected);
-      if (!groups.length) return;
-      var payload = JSON.stringify({ v: 1, station: station, groups: groups, days: days });
+      if (!groups.length || !pickup) return;
+      var payload = JSON.stringify({ v: 1, station: station, groups: groups, days: days, pickup: pickup });
       if (tg && tg.sendData) { tg.sendData(payload); }     // → bot receives web_app_data, closes app
       else { noteEl.textContent = "Open this from the Telegram bot to send."; }
     });
