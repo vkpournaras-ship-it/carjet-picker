@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>CarJet Picker</title>
+  <!-- Telegram Mini App SDK (official, public) -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: var(--tg-theme-bg-color, #0f1115);
+      --fg: var(--tg-theme-text-color, #f2f4f8);
+      --hint: var(--tg-theme-hint-color, #8a93a3);
+      --card: var(--tg-theme-secondary-bg-color, #1a1e27);
+      --btn: var(--tg-theme-button-color, #2ea6ff);
+      --btn-fg: var(--tg-theme-button-text-color, #ffffff);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 18px 16px 28px; }
+    h1 { font-size: 19px; margin: 4px 0 2px; font-weight: 700; }
+    .sub { color: var(--hint); font-size: 13px; margin: 0 0 18px; }
+    .label { font-size: 13px; color: var(--hint); text-transform: uppercase;
+      letter-spacing: .5px; margin: 18px 0 9px; }
+
+    /* Station toggle */
+    .seg { display: flex; background: var(--card); border-radius: 12px; padding: 4px; gap: 4px; }
+    .seg button { flex: 1; border: 0; background: transparent; color: var(--fg);
+      font-size: 16px; font-weight: 600; padding: 11px 0; border-radius: 9px; cursor: pointer; }
+    .seg button.on { background: var(--btn); color: var(--btn-fg); }
+
+    /* Group chips */
+    .chips { display: flex; flex-wrap: wrap; gap: 9px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; border: 2px solid transparent;
+      border-radius: 22px; padding: 9px 15px; font-size: 15px; font-weight: 600; cursor: pointer;
+      background: var(--card); color: var(--fg); opacity: .82; transition: opacity .12s, transform .05s;
+      user-select: none; }
+    .chip:active { transform: scale(.96); }
+    .chip .tick { width: 16px; opacity: 0; font-weight: 800; }
+    .chip.on { opacity: 1; color: #fff; border-color: rgba(255,255,255,.85); }
+    .chip.on .tick { opacity: 1; }
+
+    /* Day stepper */
+    .stepper { display: flex; align-items: center; justify-content: space-between;
+      background: var(--card); border-radius: 12px; padding: 8px 10px; }
+    .stepper button { width: 44px; height: 44px; border: 0; border-radius: 10px; font-size: 24px;
+      font-weight: 700; background: var(--btn); color: var(--btn-fg); cursor: pointer; line-height: 1; }
+    .stepper .val { font-size: 20px; font-weight: 700; }
+    .stepper .val small { color: var(--hint); font-weight: 500; font-size: 14px; }
+
+    /* GO */
+    .go { width: 100%; margin-top: 26px; border: 0; border-radius: 14px; padding: 16px 0;
+      font-size: 18px; font-weight: 800; background: var(--btn); color: var(--btn-fg); cursor: pointer; }
+    .go:disabled { opacity: .4; cursor: not-allowed; }
+    .note { text-align: center; color: var(--hint); font-size: 12px; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🚗 CarJet price check</h1>
+    <p class="sub">Pick station, sizes &amp; days — tap GO.</p>
+
+    <div class="label">Station</div>
+    <div class="seg" id="station">
+      <button data-st="ZTH" class="on">ZTH · Zakynthos</button>
+      <button data-st="EFL">EFL · Kefalonia</button>
+    </div>
+
+    <div class="label">Car sizes (tap to select)</div>
+    <div class="chips" id="chips"></div>
+
+    <div class="label">Days</div>
+    <div class="stepper">
+      <button id="minus" aria-label="fewer days">–</button>
+      <div class="val"><span id="days">7</span> <small>days</small></div>
+      <button id="plus" aria-label="more days">+</button>
+    </div>
+
+    <button class="go" id="go" disabled>GO</button>
+    <p class="note" id="note">Select at least one car size.</p>
+  </div>
+
+  <script>
+    // ---- INPUT-ONLY. This page knows nothing about prices, suppliers, or scrape data. ----
+    // It collects a selection and hands it back to the bot via Telegram.WebApp.sendData.
+    var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) { tg.ready(); tg.expand(); }
+
+    // Group chips — colour per size, multi-select, tick stays.
+    var GROUPS = [
+      { k: "Small",   c: "#2ea6ff" },
+      { k: "Medium",  c: "#22c55e" },
+      { k: "Large",   c: "#f59e0b" },
+      { k: "SUV",     c: "#a855f7" },
+      { k: "Estate",  c: "#14b8a6" },
+      { k: "Premium", c: "#ef4444" },
+      { k: "Cabrio",  c: "#ec4899" },
+      { k: "Van",     c: "#64748b" }
+    ];
+    var selected = {};      // { Small: true, ... }
+    var station = "ZTH";
+    var days = 7;
+
+    var chipsEl = document.getElementById("chips");
+    GROUPS.forEach(function (g) {
+      var b = document.createElement("button");
+      b.className = "chip";
+      b.dataset.k = g.k;
+      b.style.setProperty("--col", g.c);
+      b.innerHTML = '<span class="tick">✓</span>' + g.k;
+      b.addEventListener("click", function () {
+        if (selected[g.k]) { delete selected[g.k]; b.classList.remove("on"); b.style.background = ""; }
+        else { selected[g.k] = true; b.classList.add("on"); b.style.background = g.c; }
+        refresh();
+      });
+      chipsEl.appendChild(b);
+    });
+
+    // Station toggle
+    var stEl = document.getElementById("station");
+    stEl.querySelectorAll("button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        stEl.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+        b.classList.add("on");
+        station = b.dataset.st;
+      });
+    });
+
+    // Day stepper (1–28)
+    var daysEl = document.getElementById("days");
+    document.getElementById("minus").addEventListener("click", function () {
+      days = Math.max(1, days - 1); daysEl.textContent = days;
+    });
+    document.getElementById("plus").addEventListener("click", function () {
+      days = Math.min(28, days + 1); daysEl.textContent = days;
+    });
+
+    // GO
+    var goEl = document.getElementById("go");
+    var noteEl = document.getElementById("note");
+    function refresh() {
+      var keys = Object.keys(selected);
+      goEl.disabled = keys.length === 0;
+      noteEl.textContent = keys.length === 0
+        ? "Select at least one car size."
+        : keys.length + " size" + (keys.length > 1 ? "s" : "") + " · " + station + " · " + days + " days";
+    }
+    goEl.addEventListener("click", function () {
+      var groups = Object.keys(selected);
+      if (!groups.length) return;
+      var payload = JSON.stringify({ v: 1, station: station, groups: groups, days: days });
+      if (tg && tg.sendData) { tg.sendData(payload); }     // → bot receives web_app_data, closes app
+      else { noteEl.textContent = "Open this from the Telegram bot to send."; }
+    });
+
+    refresh();
+  </script>
+</body>
+</html>
