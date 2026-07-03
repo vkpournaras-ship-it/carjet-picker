@@ -127,7 +127,15 @@
 
   var SIZES = ["Small","Medium","Large","SUV","Estate","Premium","Cabrio","Van"];
   var SIZE_VAR = {Small:"--small",Medium:"--medium",Large:"--large",SUV:"--suv",
-                  Estate:"--estate",Premium:"--premium",Cabrio:"--cabrio",Van:"--van"};
+                  Estate:"--estate",Premium:"--premium",Cabrio:"--cabrio",
+                  Van:"--van","Van 7":"--van","Van 9":"--van"};
+  // Station-aware column list. ZTH = CarJet, which gives the 7/9 people-carrier seat split
+  // (classify_live) → Van 7 + Van 9 as distinct columns. EFL = rentalcars, one generic 'Van'
+  // (no seat number) → keep the single Van. Used by BOTH the matrix builder and the multi card.
+  function groupSizes(){
+    return IS_EFL ? SIZES
+                  : ["Small","Medium","Large","SUV","Estate","Premium","Cabrio","Van 7","Van 9"];
+  }
   var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
   // ── selection state ──────────────────────────────────────────────────────────
@@ -197,7 +205,7 @@
 
   // ── size chips (multi only = matrix columns) ─────────────────────────────────
   function sizeChipsHtml(){
-    return SIZES.map(function(s){
+    return groupSizes().map(function(s){
       var on = PRESIZE && s.toLowerCase() === PRESIZE;
       if (on) sel[s] = true;
       return '<button class="chip'+(on?' on':'')+'" data-size="'+s+'"'
@@ -213,7 +221,7 @@
       update();
     });
   }
-  function chosenSizes(){ return SIZES.filter(function(s){return sel[s];}); }
+  function chosenSizes(){ return groupSizes().filter(function(s){return sel[s];}); }
 
   // ── send + close ─────────────────────────────────────────────────────────────
   function send(extra){
@@ -327,14 +335,15 @@
   }
 
   // ── MATRIX BUILDER ─────────────────────────────────────────────────────────
-  // The app composes the WHOLE request: station · pickup-day RANGE · pickup/drop-off times ·
+  // The app composes the WHOLE request: station · pickup-day RANGE · pickup time ·
   // rental LENGTHS (multi) · brokers (multi) · car groups (multi). Live N = P×r×B counter; GO
   // confirms the count and blocks > 100. Sends {v:3,t:'matrix',...} back to the bot (web_app_data
   // → planMatrix → matrix_scrape.py serial sweep). PDF render is the placeholder (being redesigned).
   var MX = {
     station: (STATION.indexOf("EFL") === 0) ? "EFL02" : "ZTH02",
     start: null, end: null,                      // pickup-day range (ISO)
-    pk: "10:00", dk: "10:00",
+    pk: "10:00",                                 // drop-off = pickup (hard rule, enforced by scrapers)
+    engine: "bee",                               // scrape engine: 'bee' (default, current) | 'hybrid'
     lengths: {},                                 // {N:true}
     brk: {},                                     // chosen EXTRA broker codes
     grp: {},                                     // chosen sizes (columns)
@@ -384,13 +393,16 @@
       '<div class="seg" id="mxSt">' +
         '<button class="chip" data-st="ZTH02">ZTH</button>' +
         '<button class="chip" data-st="EFL02">EFL</button></div>' +
+      '<div class="label">Scrape engine</div>' +
+      '<div class="seg" id="mxEng">' +
+        '<button class="chip on" data-eng="bee" style="background:var(--accent)">BEE</button>' +
+        '<button class="chip" data-eng="hybrid">HYBRID</button></div>' +
       '<div class="label">Pickup-day range</div>' +
       '<div class="cal" id="mxCal"></div>' +
       '<div class="selrow"><span>Start: <b id="mxStart">—</b></span><span>End: <b id="mxEnd">—</b></span></div>' +
-      '<div class="label">Pickup &amp; drop-off time</div>' +
+      '<div class="label">Pickup time</div>' +
       '<div class="tworow">' +
-        '<div class="tcell"><label>Pickup</label><select id="mxPk">'+times+'</select></div>' +
-        '<div class="tcell"><label>Drop-off</label><select id="mxDk">'+times+'</select></div></div>' +
+        '<div class="tcell"><label>Pickup</label><select id="mxPk">'+times+'</select></div></div>' +
       '<div class="label">Rental length (days) — pick one or more</div>' +
       '<div class="row" id="mxLen">'+lenChips+'</div>' +
       '<div class="label">Brokers</div>' +
@@ -403,12 +415,18 @@
       var b = e.target.closest("button[data-st]"); if(!b) return;
       MX.station = b.getAttribute("data-st");
       STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0;
-      paintStation(); renderBrokers(); renderHeader(); mxUpdate();
+      paintStation(); renderBrokers(); renderGroups(); renderHeader(); mxUpdate();
+    });
+    document.getElementById("mxEng").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-eng]"); if(!b) return;
+      MX.engine = b.getAttribute("data-eng");
+      [].forEach.call(document.querySelectorAll("#mxEng button"), function(x){
+        var on = x.getAttribute("data-eng") === MX.engine;
+        x.classList.toggle("on", on); x.style.background = on ? "var(--accent)" : "";
+      });
     });
     document.getElementById("mxPk").value = MX.pk;
-    document.getElementById("mxDk").value = MX.dk;
     document.getElementById("mxPk").addEventListener("change", function(e){ MX.pk=e.target.value; mxUpdate(); });
-    document.getElementById("mxDk").addEventListener("change", function(e){ MX.dk=e.target.value; mxUpdate(); });
     document.getElementById("mxLen").addEventListener("click", function(e){
       var b = e.target.closest("button[data-len]"); if(!b) return;
       var L = b.getAttribute("data-len");
@@ -416,8 +434,7 @@
       else { MX.lengths[L]=true; b.classList.add("on"); b.style.background="var(--accent)"; }
       mxUpdate();
     });
-    document.getElementById("mxGrp").innerHTML = SIZES.map(function(s){
-      return '<button class="chip" data-grp="'+s+'">'+s+'</button>'; }).join("");
+    renderGroups();   // station-aware chips (re-rendered on station flip); listener is delegated
     document.getElementById("mxGrp").addEventListener("click", function(e){
       var b = e.target.closest("button[data-grp]"); if(!b) return;
       var s = b.getAttribute("data-grp");
@@ -436,6 +453,18 @@
       b.classList.toggle("on", on);
       b.style.background = on ? "var(--accent)" : "";
     });
+  }
+  // Station-aware matrix-column chips. Prunes any ticked size not valid for the current
+  // station (so flipping ZTH→EFL drops Van 7/Van 9, EFL→ZTH drops generic Van), then redraws
+  // with the surviving on-state. The click handler on #mxGrp is delegated, so it survives this.
+  function renderGroups(){
+    var gs = groupSizes();
+    Object.keys(MX.grp).forEach(function(s){ if (gs.indexOf(s) < 0) delete MX.grp[s]; });
+    document.getElementById("mxGrp").innerHTML = gs.map(function(s){
+      var on = MX.grp[s];
+      return '<button class="chip'+(on?' on':'')+'" data-grp="'+s+'"'
+           + (on?(' style="background:var('+SIZE_VAR[s]+')"'):'')+'>'+s+'</button>';
+    }).join("");
   }
   function renderBrokers(){
     var base = mxBase();
@@ -529,9 +558,10 @@
     var doSend = function(){
       tg.sendData(JSON.stringify({
         v:3, t:"matrix", st:MX.station, lang:(Q.get("lang")||"en"),
-        start:MX.start, end:(MX.end||MX.start), pk:MX.pk, dk:MX.dk,
+        engine:MX.engine,
+        start:MX.start, end:(MX.end||MX.start), pk:MX.pk,
         lengths:Object.keys(MX.lengths).map(Number).sort(function(a,b){return a-b;}),
-        groups:SIZES.filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
+        groups:groupSizes().filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
         brokers:mxExtras().map(function(b){return b.code;}).filter(function(c){return MX.brk[c];})
       }));
       tg.close();
