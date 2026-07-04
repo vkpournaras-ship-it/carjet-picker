@@ -345,18 +345,24 @@
     pk: "10:00",                                 // drop-off = pickup (hard rule, enforced by scrapers)
     engine: "bee",                               // scrape engine: 'bee' (default, current) | 'hybrid'
     lengths: {},                                 // {N:true}
-    brk: {},                                     // chosen EXTRA broker codes
+    brk: {},                                     // chosen broker codes (FLAT set; primary = first by priority)
     grp: {},                                     // chosen sizes (columns)
     view: null,                                  // {y,m} month shown
   };
   var CAP = 100;
   var DOW = ["Mo","Tu","We","Th","Fr","Sa","Su"];
 
-  function mxBase(){ return MX.station.indexOf("EFL") === 0
-      ? {code:"rc",label:"rentalcars"} : {code:"cj",label:"CarJet"}; }
-  function mxExtras(){ return MX.station.indexOf("EFL") === 0
-      ? [{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
-      : [{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"},{code:"rc",label:"RentalCars"}]; }
+  // FLAT broker multiselect (2026-07-04): every station broker is toggleable — CarJet is no
+  // longer a forced base. List order = primary-priority: the FIRST selected (top-down) is the
+  // render/primary broker on the backend; the rest are DB-only extras. ≥1 must stay selected
+  // (submit is blocked at zero). ZTH leads with CarJet, EFL with rentalcars (each station's
+  // renderable default) so the out-of-the-box selection matches the old base-only behaviour.
+  function mxAllBrokers(){ return MX.station.indexOf("EFL") === 0
+      ? [{code:"rc",label:"rentalcars"},{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
+      : [{code:"cj",label:"CarJet"},{code:"rc",label:"rentalcars"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]; }
+  function mxPrimaryCode(){ return mxAllBrokers()[0].code; }
+  function mxSelectedCodes(){ return mxAllBrokers().map(function(b){return b.code;})
+      .filter(function(c){return MX.brk[c];}); }
 
   function athTodayIso(){
     return new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Athens",
@@ -373,7 +379,7 @@
     return Math.max(0, daysBetween(MX.start, MX.end || MX.start));
   }
   function nLengths(){ return Object.keys(MX.lengths).length; }
-  function nBrokers(){ return 1 + Object.keys(MX.brk).length; }     // base + extras
+  function nBrokers(){ return mxSelectedCodes().length; }           // flat count (≥1 to submit)
   function totalScrapes(){ return pickupDays()*nLengths()*nBrokers(); }
   function baseWindows(){ return pickupDays()*nLengths(); }
   function etaMin(){ return Math.max(1, Math.round((baseWindows()*10 + baseWindows()*(nBrokers()-1)*12)/60)); }
@@ -415,7 +421,7 @@
       var b = e.target.closest("button[data-st]"); if(!b) return;
       MX.station = b.getAttribute("data-st");
       STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0;
-      paintStation(); renderBrokers(); renderGroups(); renderHeader(); mxUpdate();
+      paintStation(); renderBrokers(true); renderGroups(); renderHeader(); mxUpdate();
     });
     document.getElementById("mxEng").addEventListener("click", function(e){
       var b = e.target.closest("button[data-eng]"); if(!b) return;
@@ -443,7 +449,7 @@
       mxUpdate();
     });
 
-    paintStation(); renderBrokers(); renderCal();
+    paintStation(); renderBrokers(true); renderCal();
     tg.MainButton.onClick(mxGo); tg.MainButton.show(); mxUpdate();
   }
 
@@ -466,22 +472,27 @@
            + (on?(' style="background:var('+SIZE_VAR[s]+')"'):'')+'>'+s+'</button>';
     }).join("");
   }
-  function renderBrokers(){
-    var base = mxBase();
-    var html = '<button class="chip on" disabled style="background:var(--accent)">'+base.label+' · base</button>';
-    var valid = {}; mxExtras().forEach(function(b){ valid[b.code]=true; });
-    Object.keys(MX.brk).forEach(function(c){ if(!valid[c]) delete MX.brk[c]; });
-    mxExtras().forEach(function(b){
+  // ensureDefault=true (initial render + station flip) selects the station primary when nothing
+  // is ticked, so a fresh matrix always starts valid. A user TOGGLE re-renders with ensureDefault
+  // =false, so the owner CAN clear it to zero — the GO button then blocks submit (see mxUpdate).
+  function renderBrokers(ensureDefault){
+    var all = mxAllBrokers();
+    var valid = {}; all.forEach(function(b){ valid[b.code]=true; });
+    Object.keys(MX.brk).forEach(function(c){ if(!valid[c]) delete MX.brk[c]; });   // prune on station flip
+    if (ensureDefault && !mxSelectedCodes().length) MX.brk[mxPrimaryCode()] = true;
+    var prim = mxSelectedCodes()[0];                                               // primary = first selected
+    var html = all.map(function(b){
       var on = MX.brk[b.code];
-      html += '<button class="chip'+(on?' on':'')+'" data-brk="'+b.code+'"'+
-              (on?' style="background:var(--accent)"':'')+'>'+b.label+'</button>';
-    });
+      var tag = (on && b.code === prim) ? " · base" : "";
+      return '<button class="chip'+(on?' on':'')+'" data-brk="'+b.code+'"'+
+             (on?' style="background:var(--accent)"':'')+'>'+b.label+tag+'</button>';
+    }).join("");
     var box = document.getElementById("mxBrk"); box.innerHTML = html;
     box.onclick = function(e){
       var b = e.target.closest("button[data-brk]"); if(!b) return;
       var c = b.getAttribute("data-brk");
-      if (MX.brk[c]){ delete MX.brk[c]; b.classList.remove("on"); b.style.background=""; }
-      else { MX.brk[c]=true; b.classList.add("on"); b.style.background="var(--accent)"; }
+      if (MX.brk[c]) delete MX.brk[c]; else MX.brk[c] = true;
+      renderBrokers(false);     // re-render so the "· base" primary tag follows the new selection
       mxUpdate();
     };
   }
@@ -532,9 +543,10 @@
     var missing = [];
     if (P<1) missing.push("a pickup-day range");
     if (r<1) missing.push("a rental length");
+    if (B<1) missing.push("at least one broker");
     if (missing.length){
       box.className="count"; box.textContent="Pick "+missing.join(" and ")+" to see the scrape count.";
-      tg.MainButton.setText("PICK RANGE + LENGTH"); tg.MainButton.disable(); return;
+      tg.MainButton.setText(B<1 ? "PICK A BROKER" : "PICK RANGE + LENGTH"); tg.MainButton.disable(); return;
     }
     box.innerHTML =
       '<b>'+P+'</b> pickup day'+(P===1?'':'s')+' × <b>'+r+'</b> length'+(r===1?'':'s')+
@@ -553,7 +565,7 @@
   }
 
   function mxGo(){
-    var N=totalScrapes(); if (pickupDays()<1 || nLengths()<1 || N>CAP) return;
+    var N=totalScrapes(); if (pickupDays()<1 || nLengths()<1 || nBrokers()<1 || N>CAP) return;
     var msg = "This = "+N+" scrapes (~"+etaMin()+"min), serial. Run it?";
     var doSend = function(){
       tg.sendData(JSON.stringify({
@@ -562,7 +574,7 @@
         start:MX.start, end:(MX.end||MX.start), pk:MX.pk,
         lengths:Object.keys(MX.lengths).map(Number).sort(function(a,b){return a-b;}),
         groups:groupSizes().filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
-        brokers:mxExtras().map(function(b){return b.code;}).filter(function(c){return MX.brk[c];})
+        brokers:mxSelectedCodes()                    // FLAT selected set (primary-priority order); backend picks primary
       }));
       tg.close();
     };
