@@ -343,7 +343,6 @@
     station: (STATION.indexOf("EFL") === 0) ? "EFL02" : "ZTH02",
     start: null, end: null,                      // pickup-day range (ISO)
     pk: "10:00",                                 // drop-off = pickup (hard rule, enforced by scrapers)
-    engine: "bee",                               // scrape engine: 'bee' (default, current) | 'hybrid'
     lengths: {},                                 // {N:true}
     brk: {},                                     // chosen broker codes (FLAT set; primary = first by priority)
     grp: {},                                     // chosen sizes (columns)
@@ -399,10 +398,6 @@
       '<div class="seg" id="mxSt">' +
         '<button class="chip" data-st="ZTH02">ZTH</button>' +
         '<button class="chip" data-st="EFL02">EFL</button></div>' +
-      '<div class="label">Scrape engine</div>' +
-      '<div class="seg" id="mxEng">' +
-        '<button class="chip on" data-eng="bee" style="background:var(--accent)">BEE</button>' +
-        '<button class="chip" data-eng="hybrid">HYBRID</button></div>' +
       '<div class="label">Pickup-day range</div>' +
       '<div class="cal" id="mxCal"></div>' +
       '<div class="selrow"><span>Start: <b id="mxStart">—</b></span><span>End: <b id="mxEnd">—</b></span></div>' +
@@ -422,14 +417,6 @@
       MX.station = b.getAttribute("data-st");
       STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0;
       paintStation(); renderBrokers(true); renderGroups(); renderHeader(); mxUpdate();
-    });
-    document.getElementById("mxEng").addEventListener("click", function(e){
-      var b = e.target.closest("button[data-eng]"); if(!b) return;
-      MX.engine = b.getAttribute("data-eng");
-      [].forEach.call(document.querySelectorAll("#mxEng button"), function(x){
-        var on = x.getAttribute("data-eng") === MX.engine;
-        x.classList.toggle("on", on); x.style.background = on ? "var(--accent)" : "";
-      });
     });
     document.getElementById("mxPk").value = MX.pk;
     document.getElementById("mxPk").addEventListener("change", function(e){ MX.pk=e.target.value; mxUpdate(); });
@@ -570,7 +557,6 @@
     var doSend = function(){
       tg.sendData(JSON.stringify({
         v:3, t:"matrix", st:MX.station, lang:(Q.get("lang")||"en"),
-        engine:MX.engine,
         start:MX.start, end:(MX.end||MX.start), pk:MX.pk,
         lengths:Object.keys(MX.lengths).map(Number).sort(function(a,b){return a-b;}),
         groups:groupSizes().filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
