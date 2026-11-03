@@ -360,6 +360,7 @@
     lengths: {},                                 // {N:true}
     brk: {},                                     // chosen broker codes (FLAT set; primary = first by priority)
     grp: {},                                     // chosen sizes (columns)
+    top: 3,                                      // competitors listed per card cell (3 | 5 | 10)
     view: null,                                  // {y,m} month shown
   };
   var CAP = 100;
@@ -426,6 +427,9 @@
       '<div class="row" id="mxBrk"></div>' +
       '<div class="label">Car groups (matrix columns)</div>' +
       '<div class="row" id="mxGrp"></div>' +
+      '<div class="label">Competitors per cell</div>' +
+      '<div class="seg" id="mxTop">' + [3,5,10].map(function(n){
+        return '<button class="chip" data-top="'+n+'">'+n+'</button>'; }).join("") + '</div>' +
       '<div class="count" id="mxCount"></div>';
 
     document.getElementById("mxSt").addEventListener("click", function(e){
@@ -452,7 +456,12 @@
       mxUpdate();
     });
 
-    paintStation(); renderBrokers(true); renderCal();
+    // Competitors per cell: single choice, render-only (never changes the scrape count).
+    document.getElementById("mxTop").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-top]"); if(!b) return;
+      MX.top = parseInt(b.getAttribute("data-top"),10); paintTop();
+    });
+    paintStation(); paintTop(); renderBrokers(true); renderCal();
     tg.MainButton.onClick(mxGo); tg.MainButton.show(); mxUpdate();
   }
 
@@ -461,6 +470,13 @@
     return STATIONS.filter(function(st){ return st.ma===ma; }).map(function(st){
       return '<button class="chip" data-st="'+st.code+'">'+st.label+'</button>';
     }).join("");
+  }
+  function paintTop(){
+    [].forEach.call(document.querySelectorAll("#mxTop button"), function(b){
+      var on = parseInt(b.getAttribute("data-top"),10)===MX.top;
+      b.classList.toggle("on", on);
+      b.style.background = on ? "var(--accent)" : "";
+    });
   }
   function paintStation(){
     [].forEach.call(document.querySelectorAll("#mxSt button"), function(b){
@@ -582,6 +598,7 @@
         start:MX.start, end:(MX.end||MX.start), pk:MX.pk,
         lengths:Object.keys(MX.lengths).map(Number).sort(function(a,b){return a-b;}),
         groups:groupSizes().filter(function(s){return MX.grp[s];}).map(function(s){return s.toLowerCase();}),
+        top:MX.top,                                  // competitors per card cell
         brokers:mxSelectedCodes()                    // FLAT selected set (primary-priority order); backend picks primary
       }));
       tg.close();
