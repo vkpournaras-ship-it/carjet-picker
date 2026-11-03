@@ -119,10 +119,24 @@
   // ── per-station broker base + extras ─────────────────────────────────────────
   // The base (always running) is CarJet for ZTH, rentalcars for EFL. Optional extras are the
   // other three. CarJet is never a single/today button — it is the base.
+  // Station registry (mirrors the fork's STATIONS in broker-buttons.ts). Morocco (2026-11-03) is
+  // CarJet-ONLY: the rentalcars / Discover / CarTrawler scripts have no Morocco location, so no
+  // extra broker is ever offered there.
+  var STATIONS = [
+    {code:"ZTH02", label:"ZTH", ma:false}, {code:"EFL02", label:"EFL", ma:false},
+    {code:"CAS02", label:"CMN", ma:true},  {code:"RAK02", label:"RAK", ma:true},
+    {code:"AGA01", label:"AGA", ma:true},  {code:"TNG02", label:"TNG", ma:true}];
+  function stationOf(code){
+    for (var i=0;i<STATIONS.length;i++){ if (STATIONS[i].code===code) return STATIONS[i]; }
+    return null;
+  }
+  function stLabel(code){ var st = stationOf(code); return st ? st.label : code.slice(0,3); }
   var IS_EFL = STATION.indexOf("EFL") === 0;
+  var IS_MA  = !!(stationOf(STATION) || {}).ma;
   var BASE   = IS_EFL ? {code:"rc", label:"rentalcars"} : {code:"cj", label:"CarJet"};
   var EXTRAS = IS_EFL
     ? [{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
+    : IS_MA ? []
     : [{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"},{code:"rc",label:"RentalCars"}];
 
   var SIZES = ["Small","Medium","Large","SUV","Estate","Premium","Cabrio","Van"];
@@ -159,9 +173,9 @@
 
   // ── read-only header ─────────────────────────────────────────────────────────
   function renderHeader(){
-    document.getElementById("hdStat").textContent = IS_EFL ? "EFL · rentalcars" : "ZTH · CarJet";
+    document.getElementById("hdStat").textContent = IS_EFL ? "EFL · rentalcars" : stLabel(STATION) + " · CarJet";
     document.getElementById("hdLive").textContent = "live · " + athensClock();
-    var loc = STATION.slice(0,3);
+    var loc = stLabel(STATION);
     if (TYPE === "matrix"){
       document.getElementById("hdMain").textContent = loc + "  matrix builder";
       document.getElementById("hdSub").textContent  = "compose the full sweep below, then GO";
@@ -340,7 +354,7 @@
   // confirms the count and blocks > 100. Sends {v:3,t:'matrix',...} back to the bot (web_app_data
   // → planMatrix → matrix_scrape.py serial sweep). PDF render is the placeholder (being redesigned).
   var MX = {
-    station: (STATION.indexOf("EFL") === 0) ? "EFL02" : "ZTH02",
+    station: stationOf(STATION) ? STATION : "ZTH02",
     start: null, end: null,                      // pickup-day range (ISO)
     pk: "10:00",                                 // drop-off = pickup (hard rule, enforced by scrapers)
     lengths: {},                                 // {N:true}
@@ -356,7 +370,9 @@
   // render/primary broker on the backend; the rest are DB-only extras. ≥1 must stay selected
   // (submit is blocked at zero). ZTH leads with CarJet, EFL with rentalcars (each station's
   // renderable default) so the out-of-the-box selection matches the old base-only behaviour.
-  function mxAllBrokers(){ return MX.station.indexOf("EFL") === 0
+  function mxAllBrokers(){ return (stationOf(MX.station) || {}).ma
+      ? [{code:"cj",label:"CarJet"}]
+      : MX.station.indexOf("EFL") === 0
       ? [{code:"rc",label:"rentalcars"},{code:"cj",label:"CarJet"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]
       : [{code:"cj",label:"CarJet"},{code:"rc",label:"rentalcars"},{code:"dc",label:"Discover"},{code:"ct",label:"CTrawler"}]; }
   function mxPrimaryCode(){ return mxAllBrokers()[0].code; }
@@ -395,9 +411,9 @@
 
     stage.innerHTML =
       '<div class="label">Station</div>' +
-      '<div class="seg" id="mxSt">' +
-        '<button class="chip" data-st="ZTH02">ZTH</button>' +
-        '<button class="chip" data-st="EFL02">EFL</button></div>' +
+      '<div id="mxSt">' +
+        '<div class="seg">' + stChips(false) + '</div>' +
+        '<div class="seg" style="margin-top:7px">' + stChips(true) + '</div></div>' +
       '<div class="label">Pickup-day range</div>' +
       '<div class="cal" id="mxCal"></div>' +
       '<div class="selrow"><span>Start: <b id="mxStart">—</b></span><span>End: <b id="mxEnd">—</b></span></div>' +
@@ -415,7 +431,7 @@
     document.getElementById("mxSt").addEventListener("click", function(e){
       var b = e.target.closest("button[data-st]"); if(!b) return;
       MX.station = b.getAttribute("data-st");
-      STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0;
+      STATION = MX.station; IS_EFL = MX.station.indexOf("EFL")===0; IS_MA = !!stationOf(MX.station).ma;
       paintStation(); renderBrokers(true); renderGroups(); renderHeader(); mxUpdate();
     });
     document.getElementById("mxPk").value = MX.pk;
@@ -440,6 +456,12 @@
     tg.MainButton.onClick(mxGo); tg.MainButton.show(); mxUpdate();
   }
 
+  // Greek stations on the first row, the four Morocco airports on the second.
+  function stChips(ma){
+    return STATIONS.filter(function(st){ return st.ma===ma; }).map(function(st){
+      return '<button class="chip" data-st="'+st.code+'">'+st.label+'</button>';
+    }).join("");
+  }
   function paintStation(){
     [].forEach.call(document.querySelectorAll("#mxSt button"), function(b){
       var on = b.getAttribute("data-st")===MX.station;
